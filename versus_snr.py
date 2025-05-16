@@ -1,3 +1,4 @@
+# versus snr
 import numpy as np
 import torch
 import torch.nn as nn
@@ -63,9 +64,9 @@ def get_real_imag_input(iq_data):
     x_real = np.real(iq_data).astype(np.float32)
     x_imag = np.imag(iq_data).astype(np.float32)
     
-    norm = np.sqrt(x_real**2 + x_imag**2 + 1e-8)
-    x_real /= norm
-    x_imag /= norm
+    #norm = np.sqrt(x_real**2 + x_imag**2 + 1e-9)
+    #x_real /= norm
+    #x_imag /= norm
 
     x = np.stack((x_real, x_imag), axis=1)  # shape: (N, 2, 128)
     return x
@@ -80,15 +81,19 @@ def get_amp_phase_input_norm(iq_data):
 
 
 # --- Models ---
+# fft proposed
 class SimpleMLP(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
         super(SimpleMLP, self).__init__()
         self.model = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
+            #nn.LayerNorm(hidden_dim),
             nn.Tanh(),
             nn.Linear(hidden_dim, hidden_dim),
+            #nn.LayerNorm(hidden_dim),
             nn.Tanh(),
             nn.Linear(hidden_dim, hidden_dim),
+            #nn.LayerNorm(hidden_dim),
             nn.Tanh(),
             nn.Linear(hidden_dim, output_dim)
         )
@@ -100,12 +105,13 @@ class SimpleMLP2(nn.Module):
         super(SimpleMLP2, self).__init__()
         self.model = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
-            #nn.BatchNorm1d(hidden_dim),
+            #nn.LayerNorm(hidden_dim),
             nn.Tanh(),
             nn.Linear(hidden_dim, hidden_dim),
-            #nn.BatchNorm1d(hidden_dim),
+            #nn.LayerNorm(hidden_dim),
             nn.Tanh(),
             nn.Linear(hidden_dim, hidden_dim),
+            #nn.LayerNorm(hidden_dim),
             nn.Tanh(),
             nn.Linear(hidden_dim, output_dim)
         )
@@ -115,6 +121,7 @@ class SimpleMLP2(nn.Module):
 class Legacy1DCNN(nn.Module):
     def __init__(self, num_classes):
         super(Legacy1DCNN, self).__init__()
+        self.noise = NoiseLayer(snr_db=5) 
         self.features = nn.Sequential(
             nn.Conv1d(2, 64, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm1d(64),
@@ -131,7 +138,8 @@ class Legacy1DCNN(nn.Module):
         )
 
         self.classifier = nn.Sequential(
-            nn.Flatten(),         # 16 x 32 = 512
+            nn.Flatten(), 
+            nn.Dropout(0.3),  # 16 x 32 = 512
             nn.Linear(512, 256),
             nn.LeakyReLU(),
             nn.Linear(256, 128),
@@ -184,8 +192,9 @@ class TableICNN(nn.Module):
 patience=20
 
 # --- Training functions ---
+# proposed abs
 def train_eval_mlp(x_train, x_val, x_test, y_train, y_val, y_true, input_dim, hidden_dim, output_dim, epochs=120):
-    set_random_seed(0)
+   # set_random_seed(0)
 
     x_train = torch.tensor(x_train, dtype=torch.float32).to(device)
     x_val = torch.tensor(x_val, dtype=torch.float32).to(device)
@@ -201,10 +210,10 @@ def train_eval_mlp(x_train, x_val, x_test, y_train, y_val, y_true, input_dim, hi
     criterion = nn.CrossEntropyLoss()
     #scheduler = optim.lr_scheduler.MultiStepLR(optimizer, step_size=100, gamma=0.1)
 
-    g = torch.Generator()
-    g.manual_seed(0)
+   # g = torch.Generator()
+   # g.manual_seed(0)
 
-    train_loader = DataLoader(TensorDataset(x_train, y_label_tensor), batch_size=64, shuffle=True, generator=g)
+    train_loader = DataLoader(TensorDataset(x_train, y_label_tensor), batch_size=64, shuffle=True)
 
     best_val_acc = 0.0
     best_val_loss = float('inf')
@@ -226,6 +235,7 @@ def train_eval_mlp(x_train, x_val, x_test, y_train, y_val, y_true, input_dim, hi
         with torch.no_grad():
             val_pred = model(x_val)
             val_loss = criterion(val_pred, y_val_tensor).item()
+            val_loss = criterion(val_pred, y_val_label_tensor).item()
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -246,7 +256,7 @@ def train_eval_mlp(x_train, x_val, x_test, y_train, y_val, y_true, input_dim, hi
     return correct / len(y_true)
 
 def train_eval_mlp2(x_train, x_val, x_test, y_train, y_val, y_true, input_dim, hidden_dim, output_dim, epochs=120):
-    set_random_seed(0)
+    #set_random_seed(0)
 
     x_train = torch.tensor(x_train, dtype=torch.float32).to(device)
     x_val = torch.tensor(x_val, dtype=torch.float32).to(device)
@@ -262,10 +272,10 @@ def train_eval_mlp2(x_train, x_val, x_test, y_train, y_val, y_true, input_dim, h
     criterion = nn.CrossEntropyLoss()
     #scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.1)
 
-    g = torch.Generator()
-    g.manual_seed(0)
+    #g = torch.Generator()
+    #g.manual_seed(0)
 
-    train_loader = DataLoader(TensorDataset(x_train, y_label_tensor), batch_size=64, shuffle=True, generator=g)
+    train_loader = DataLoader(TensorDataset(x_train, y_label_tensor), batch_size=64, shuffle=True)
 
     best_val_loss = float('inf')
     best_val_acc = 0.0
@@ -286,6 +296,7 @@ def train_eval_mlp2(x_train, x_val, x_test, y_train, y_val, y_true, input_dim, h
         with torch.no_grad():
             val_pred = model(x_val)
             val_loss = criterion(val_pred, y_val_tensor).item()
+            val_loss = criterion(val_pred, y_val_label_tensor).item()
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -306,9 +317,9 @@ def train_eval_mlp2(x_train, x_val, x_test, y_train, y_val, y_true, input_dim, h
     correct = (pred == y_true).sum()
     return correct / len(y_true)
 
-
-def train_eval_cnn(x_train, x_val, x_test, y_train, y_val, y_true, output_dim, epochs=70):
-    set_random_seed(0)
+#SCNN2
+def train_eval_cnn(x_train, x_val, x_test, y_train, y_val, y_true, output_dim, epochs=50):
+    #set_random_seed(0)
     
     x_train = torch.tensor(x_train, dtype=torch.float32).to(device)
     x_val = torch.tensor(x_val, dtype=torch.float32).to(device)
@@ -317,14 +328,14 @@ def train_eval_cnn(x_train, x_val, x_test, y_train, y_val, y_true, output_dim, e
     y_val_tensor = torch.tensor(y_val, dtype=torch.long).to(device)
 
     model = TableICNN(output_dim).to(device)
-    optimizer = optim.SGD(model.parameters(), lr=0.0005)
+    optimizer = optim.SGD(model.parameters(), lr=0.0005, weight_decay=5e-4)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.1)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.18)
 
-    g = torch.Generator()
-    g.manual_seed(0)
+    #g = torch.Generator()
+    #g.manual_seed(0)
 
-    train_loader = DataLoader(TensorDataset(x_train, y_train_tensor), batch_size=64, shuffle=True, generator=g)
+    train_loader = DataLoader(TensorDataset(x_train, y_train_tensor), batch_size=64, shuffle=True)
 
     best_val_loss = float('inf')
     best_val_acc = 0.0
@@ -367,130 +378,48 @@ def train_eval_cnn(x_train, x_val, x_test, y_train, y_val, y_true, output_dim, e
     correct = (pred == y_true).sum()
     return correct / len(y_true)
 
-def train_eval_legacy_cnn(x_train, x_val, x_test, y_train, y_val, y_true, output_dim, epochs=80):
-    set_random_seed(0)
 
-    x_train = torch.tensor(x_train, dtype=torch.float32).to(device)
-    x_val = torch.tensor(x_val, dtype=torch.float32).to(device)
-    x_test = torch.tensor(x_test, dtype=torch.float32).to(device)
-    y_train_tensor = torch.tensor(y_train, dtype=torch.long).to(device)
-    y_val_tensor = torch.tensor(y_val, dtype=torch.long).to(device)
-
-    model = Legacy1DCNN(output_dim).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=0.01, betas=(0.9, 0.99), eps=1e-8, weight_decay=1e-5, amsgrad=False)
-    #optimizer = optim.SGD(model.parameters(), lr=0.008)
-    criterion = nn.CrossEntropyLoss()
-
-    g = torch.Generator()
-    g.manual_seed(0)
-
-    train_loader = DataLoader(TensorDataset(x_train, y_train_tensor), batch_size=64, shuffle=True, generator=g)
-
-    best_val_loss = float('inf')
-    best_model = None
-    patience_counter = 0
-    patience = 20
-
-    for _ in range(epochs):
-        model.train()
-        for xb, yb in train_loader:
-            optimizer.zero_grad()
-            pred = model(xb)
-            loss = criterion(pred, yb)
-            loss.backward()
-            optimizer.step()
-
-        model.eval()
-        with torch.no_grad():
-            val_pred = model(x_val)
-            val_loss = criterion(val_pred, y_val_tensor).item()
-
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            best_model = model.state_dict()
-            patience_counter = 0
-        else:
-            patience_counter += 1
-
-        if patience_counter >= patience:
-            break
-
-    model.load_state_dict(best_model)
-
-    model.eval()
-    with torch.no_grad():
-        pred = model(x_test).argmax(dim=1).cpu().numpy()
-    correct = (pred == y_true).sum()
-    return correct / len(y_true)
-
-class NoiseLayer(nn.Module):
-    def __init__(self, snr_db=10):  # 기본값은 10dB
-        super(NoiseLayer, self).__init__()
-        self.snr_db = snr_db
-
-    def forward(self, x):
-        if self.training:
-            signal_power = x.pow(2).mean(dim=(1, 2), keepdim=True)
-            snr_linear = 10 ** (self.snr_db / 10)
-            noise_power = signal_power / snr_linear
-            noise = torch.randn_like(x) * noise_power.sqrt()
-            return x + noise
-        else:
-            return x
-
-
+# cnn legacy
 class CNN2(nn.Module):
-    def __init__(self, num_classes=4, snr_db=10):
+    def __init__(self, num_classes=4):
         super(CNN2, self).__init__()
-        self.noise = NoiseLayer(snr_db=snr_db)  # 추가된 노이즈 레이어
+        #self.inst_norm = nn.InstanceNorm1d(num_features=2, affine=False)
+        self.conv = nn.Sequential(
+            #self.inst_norm,
+            nn.Conv1d(2, 32, 3, padding=1),
+            nn.BatchNorm1d(32),
+            nn.ReLU(),
+            nn.LayerNorm([32, 128]),
+            nn.Conv1d(32, 32, 3, padding=1),
+            nn.BatchNorm1d(32),
+            nn.ReLU(),
+            nn.LayerNorm([32, 128]),
+            nn.Conv1d(32, 32, 3, padding=1),
+            nn.BatchNorm1d(32),
+            nn.ReLU(),
+            #nn.Dropout(0.3),
+            nn.MaxPool1d(2),
+            nn.LayerNorm([32, 64]),
+        )
 
-        self.conv1 = nn.Conv1d(2, 256, kernel_size=1)
-        self.pool1 = nn.MaxPool1d(2)
-        self.drop1 = nn.Dropout(0.5)
-
-        self.conv2 = nn.Conv1d(256, 128, kernel_size=1)
-        self.pool2 = nn.MaxPool1d(2)
-        self.drop2 = nn.Dropout(0.5)
-
-        self.conv3 = nn.Conv1d(128, 64, kernel_size=1)
-        self.pool3 = nn.MaxPool1d(2)
-        self.drop3 = nn.Dropout(0.5)
-
-        self.conv4 = nn.Conv1d(64, 64, kernel_size=1)
-        self.pool4 = nn.MaxPool1d(2)
-        self.drop4 = nn.Dropout(0.5)
-
-        self.fc1 = nn.Linear(64 * 8, 128)
-        self.fc2 = nn.Linear(128, num_classes)
+        self.fc = nn.Sequential(
+            nn.Flatten(),
+            nn.Dropout(0.3),
+            nn.Linear(32 * 64, 64),
+            nn.ReLU(),
+            nn.Dropout(0.4),
+            nn.Linear(64, num_classes)
+        )
 
     def forward(self, x):
-        x = self.noise(x)  # 학습 중에만 적용됨
-
-        x = F.relu(self.conv1(x))
-        x = self.pool1(x)
-        x = self.drop1(x)
-
-        x = F.relu(self.conv2(x))
-        x = self.pool2(x)
-        x = self.drop2(x)
-
-        x = F.relu(self.conv3(x))
-        x = self.pool3(x)
-        x = self.drop3(x)
-
-        x = F.relu(self.conv4(x))
-        x = self.pool4(x)
-        x = self.drop4(x)
-
-        x = x.view(x.size(0), -1)
-        x = F.relu(self.fc1(x))
-        x = self.fc2(x)
+        x = self.conv(x)
+        x = self.fc(x)
         return x
 
 
-   
-def train_eval_cnn2(x_train, x_val, x_test, y_train, y_val, y_test, num_classes, epochs=70):
-    set_random_seed(0)
+#CNN legacy
+def train_eval_cnn2(x_train, x_val, x_test, y_train, y_val, y_test, num_classes, epochs=40):
+    #set_random_seed(0)
 
     x_train = torch.tensor(x_train, dtype=torch.float32).to(device)
     x_val = torch.tensor(x_val, dtype=torch.float32).to(device)
@@ -499,13 +428,15 @@ def train_eval_cnn2(x_train, x_val, x_test, y_train, y_val, y_test, num_classes,
     y_val = torch.tensor(y_val, dtype=torch.long).to(device)
 
     model = CNN2(num_classes).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-    criterion = nn.CrossEntropyLoss()
+    #optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
+    optimizer = optim.SGD(model.parameters(), lr=1e-3, momentum=0.9, weight_decay=1e-3)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=30)
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 
-    g = torch.Generator()
-    g.manual_seed(0)
+    #g = torch.Generator()
+    #g.manual_seed(0)
 
-    train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=64, shuffle=True, generator=g)
+    train_loader = DataLoader(TensorDataset(x_train, y_train), batch_size=128, shuffle=True)
 
     best_val_loss = float('inf')
     best_model = None
@@ -520,6 +451,8 @@ def train_eval_cnn2(x_train, x_val, x_test, y_train, y_val, y_test, num_classes,
             loss = criterion(pred, yb)
             loss.backward()
             optimizer.step()
+
+        scheduler.step()
 
         model.eval()
         with torch.no_grad():
@@ -546,19 +479,18 @@ def train_eval_cnn2(x_train, x_val, x_test, y_train, y_val, y_test, num_classes,
 SNR_vec = np.arange(-20, 19, 2)
 nTotal_per_mod = 1000
 str_dim = 24 #proposed
-str_dim2 = 24
 modulations = ['BPSK', 'QAM16', 'QAM64', 'QPSK']
 Qmax = len(modulations)
 
 with open('RML2016.10a_dict.pkl', 'rb') as f:
     data_dict = pickle.load(f, encoding='latin1')
 
-repeats = 1
+repeats = 15
 results_all = {key: [] for key in ['Legacy_abs', 'Legacy_realimag', 'Proposed_hankel_abs', 'Proposed_hankel_fft_abs', 'CNN_spectrogram']}
 
 for repeat_idx in range(repeats):
     print(f"Repeat {repeat_idx+1}/{repeats}")
-    set_random_seed(0)  # 
+    set_random_seed(repeat_idx)  
 
     results = {key: [] for key in results_all.keys()}
 
@@ -599,7 +531,7 @@ for repeat_idx in range(repeats):
         Y_val_onehot = np.eye(Qmax)[Y_val]
 
         results['Legacy_abs'].append(train_eval_mlp(np.abs(X_train), np.abs(X_val), np.abs(X_test),
-                                                    Y_train_onehot, Y_val_onehot, Y_test, 128, str_dim2, Qmax))
+                                                    Y_train_onehot, Y_val_onehot, Y_test, 128, str_dim, Qmax))
         
         X_train1 = get_real_imag_input(np.concatenate(X_train_all))
         X_val1 = get_real_imag_input(np.concatenate(X_val_all))
@@ -633,10 +565,7 @@ results_avg = {key: np.mean(results_all[key], axis=0) for key in results_all}
 
 mpl.rcParams['text.usetex'] = False
 mpl.rcParams['mathtext.fontset'] = 'cm'  
-mpl.rcParams['font.family'] = 'serif'
-
-x_smooth = np.linspace(SNR_vec.min(), SNR_vec.max(), 500)
-
+mpl.rcParams['font.family'] = 'serif'    
 keys = ['Proposed_hankel_abs', 'Proposed_hankel_fft_abs', 'Legacy_abs', 'Legacy_realimag', 'CNN_spectrogram']
 labels = [
     'Proposed method (with original signal)',
@@ -647,26 +576,18 @@ labels = [
 ]
 markers = ['^', 'x', 'o', 's', 'h']  
 
-
-colors = plt.cm.tab10.colors  # 또는 plt.get_cmap('tab10')
-
 plt.figure()
-for i, (key, label, marker) in enumerate(zip(keys, labels, markers)):
-    y = results_avg[key]
-    color = colors[i % len(colors)]
 
-    
-    spline = make_interp_spline(SNR_vec, y, k=1)
-    y_smooth = spline(x_smooth)
-    plt.plot(x_smooth, y_smooth, label=label, color=color)
-
-    
-    plt.plot(SNR_vec, y, marker=marker, linestyle='None', color=color)
+plt.plot(SNR_vec, results_avg['Proposed_hankel_abs'], label='Proposed method (with original signal)', marker='^')
+plt.plot(SNR_vec, results_avg['Proposed_hankel_fft_abs'], label='Proposed method (with FFT-processed signal)', marker='x')
+plt.plot(SNR_vec, results_avg['Legacy_abs'], label='Deep learning (with absolute values of signal)', marker='o')
+plt.plot(SNR_vec, results_avg['Legacy_realimag'], label='Deep learning (CNN with real and imaginary values of signal)', marker='s')
+plt.plot(SNR_vec, results_avg['CNN_spectrogram'], label='SCNN2', marker='h')
 
 plt.grid(True)
 plt.xlabel('SNR [dB]')
 plt.ylabel('Detection rate')
-plt.xticks(SNR_vec)  
+plt.xticks(SNR_vec)
 plt.yticks(np.arange(0, 1.1, 0.1))
 plt.xlim([SNR_vec[0], SNR_vec[-1]])
 plt.ylim([0, 1])
